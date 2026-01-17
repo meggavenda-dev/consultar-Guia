@@ -8,3 +8,4 @@ pdfplumber
 PyPDF2
 lxml
 beautifulsoup4
+numpy
