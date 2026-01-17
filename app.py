@@ -113,7 +113,7 @@ if st.button("🚀 Iniciar Processo Completo"):
                 janela_tiss = driver.current_window_handle
                 
                 # 3. BUSCA
-                driver.get("https://arhptiss.amhp.com.br/AtendimentosRealizados.aspx")
+                driver.get("https://amhptiss.amhp.com.br/AtendimentosRealizados.aspx")
                 st.write("🔍 Filtrando atendimento...")
                 input_f = wait.until(EC.presence_of_element_located((By.ID, "ctl00_MainContent_rtbNumeroAtendimento")))
                 input_f.send_keys(guia_alvo + Keys.ENTER)
