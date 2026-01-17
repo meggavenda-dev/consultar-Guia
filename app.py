@@ -5,6 +5,7 @@ import time
 import re
 import io
 import os
+import pdfplumber
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
@@ -13,12 +14,18 @@ from selenium.webdriver.support.ui import WebDriverWait, Select
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.keys import Keys
 
-# === CONFIGURAÇÃO DO AMBIENTE ===
+# === 1. CONFIGURAÇÃO DO AMBIENTE E DOWNLOADS ===
 def configurar_driver():
-    # AJUSTE 1: Configurar pasta de download e preferências
+    # Define pasta temporária e garante que esteja limpa
     download_dir = os.path.join(os.getcwd(), "temp_pdfs")
     if not os.path.exists(download_dir):
         os.makedirs(download_dir)
+    else:
+        # Limpa arquivos de consultas anteriores
+        for f in os.listdir(download_dir):
+            if f.endswith(".pdf"):
+                try: os.remove(os.path.join(download_dir, f))
+                except: pass
 
     opts = Options()
     opts.add_argument("--headless=new")
@@ -46,7 +53,7 @@ def configurar_driver():
         driver = webdriver.Chrome(service=service, options=opts)
     return driver
 
-# === NAVEGAÇÃO ENTRE FRAMES ===
+# === 2. GESTÃO DE CONTEXTO (FRAMES) ===
 def entrar_no_frame_do_elemento(driver, element_id):
     driver.switch_to.default_content()
     try:
@@ -64,7 +71,38 @@ def entrar_no_frame_do_elemento(driver, element_id):
                 continue
     return False
 
-# === FUNÇÃO DE BUSCA NO PORTAL AMHP ===
+# === 3. EXTRAÇÃO DE DADOS DO PDF ===
+def processar_pdfs_baixados():
+    all_data = []
+    pdf_path = os.path.join(os.getcwd(), "temp_pdfs")
+    
+    # Verifica se há arquivos na pasta
+    arquivos = [f for f in os.listdir(pdf_path) if f.endswith(".pdf")]
+    if not arquivos:
+        return pd.DataFrame()
+
+    for filename in arquivos:
+        try:
+            with pdfplumber.open(os.path.join(pdf_path, filename)) as pdf:
+                for page in pdf.pages:
+                    table = page.extract_table()
+                    if table:
+                        # O pdfplumber retorna uma lista de listas. 
+                        # table[0] costuma ser o cabeçalho, table[1:] os dados.
+                        df_temp = pd.DataFrame(table[1:], columns=table[0])
+                        df_temp['Fonte'] = filename
+                        all_data.append(df_temp)
+        except Exception as e:
+            st.error(f"Erro ao ler o arquivo {filename}: {e}")
+    
+    if all_data:
+        df_final = pd.concat(all_data, ignore_index=True)
+        # Limpeza básica: remove linhas totalmente nulas
+        df_final = df_final.dropna(how='all')
+        return df_final
+    return pd.DataFrame()
+
+# === 4. AUTOMAÇÃO SELENIUM (FLUXO COMPLETO) ===
 def extrair_detalhes_site_amhp(numero_guia):
     driver = configurar_driver()
     wait = WebDriverWait(driver, 30)
@@ -72,12 +110,12 @@ def extrair_detalhes_site_amhp(numero_guia):
     janela_principal = None
     
     try:
-        # 1. Login
+        # A. Login
         driver.get("https://portal.amhp.com.br/")
         wait.until(EC.presence_of_element_located((By.ID, "input-9"))).send_keys(st.secrets["credentials"]["usuario"])
         driver.find_element(By.ID, "input-12").send_keys(st.secrets["credentials"]["senha"] + Keys.ENTER)
 
-        # 2. Acesso ao Módulo TISS
+        # B. Acesso ao Módulo TISS
         time.sleep(6)
         btn_tiss = wait.until(EC.element_to_be_clickable((By.XPATH, "//button[contains(., 'AMHPTISS')]")))
         driver.execute_script("arguments[0].click();", btn_tiss)
@@ -87,11 +125,10 @@ def extrair_detalhes_site_amhp(numero_guia):
             driver.switch_to.window(driver.window_handles[-1])
         janela_principal = driver.current_window_handle
 
-        # 3. Navegação Direta
+        # C. Busca da Guia
         driver.get("https://amhptiss.amhp.com.br/AtendimentosRealizados.aspx")
         time.sleep(4)
 
-        # 4. RadInput (Preenchimento)
         input_id = "ctl00_MainContent_rtbNumeroAtendimento"
         state_id = "ctl00_MainContent_rtbNumeroAtendimento_ClientState"
         entrar_no_frame_do_elemento(driver, input_id)
@@ -112,52 +149,46 @@ def extrair_detalhes_site_amhp(numero_guia):
             }
         """, input_id, state_id, valor_solicitado, client_state)
 
-        # 5. Buscar
         btn_buscar = driver.find_element(By.ID, "ctl00_MainContent_btnBuscar_input")
         driver.execute_script("arguments[0].click();", btn_buscar)
         
-        # 6. Abrir Guia
         time.sleep(4)
         wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, ".rgMasterTable")))
         link_guia = wait.until(EC.element_to_be_clickable((By.XPATH, f"//a[contains(text(), '{valor_solicitado}')]")))
         driver.execute_script("arguments[0].click();", link_guia)
         time.sleep(3)
 
-        # AJUSTE 2: Exportar Guia Principal
+        # D. Exportar Guia Principal
         btn_imprimir_id = "ctl00_MainContent_btnImprimir_input"
         if entrar_no_frame_do_elemento(driver, btn_imprimir_id):
             btn_imprimir = driver.find_element(By.ID, btn_imprimir_id)
             driver.execute_script("arguments[0].click();", btn_imprimir)
-            time.sleep(6) # Esperar pop-up
+            time.sleep(7) 
 
-            # Gerenciar Janelas (Ir para o Relatório)
             for handle in driver.window_handles:
                 if handle != janela_principal:
                     driver.switch_to.window(handle)
                     break
             
-            # Exportar PDF no Pop-up
             try:
                 dropdown = wait.until(EC.presence_of_element_located((By.ID, "ReportView_ReportToolbar_ExportGr_FormatList_DropDownList")))
                 Select(dropdown).select_by_value("PDF")
                 time.sleep(1)
                 driver.find_element(By.ID, "ReportView_ReportToolbar_ExportGr_Export").click()
-                time.sleep(4) # Tempo de download
-                driver.close() # Fecha janela do relatório
-            except:
-                pass
+                time.sleep(5) 
+                driver.close() 
+            except: pass
             
             driver.switch_to.window(janela_principal)
 
-        # AJUSTE 3: Verificar Outras Despesas
+        # E. Exportar Outras Despesas (se existir)
         entrar_no_frame_do_elemento(driver, "ctl00_MainContent_rbtOutrasDespesas_input")
         try:
             btn_outras = driver.find_element(By.ID, "ctl00_MainContent_rbtOutrasDespesas_input")
             if btn_outras.is_enabled():
                 driver.execute_script("arguments[0].click();", btn_outras)
-                time.sleep(6)
+                time.sleep(7)
                 
-                # Gerenciar Janelas novamente para o novo relatório
                 for handle in driver.window_handles:
                     if handle != janela_principal:
                         driver.switch_to.window(handle)
@@ -165,12 +196,11 @@ def extrair_detalhes_site_amhp(numero_guia):
                         Select(dropdown).select_by_value("PDF")
                         time.sleep(1)
                         driver.find_element(By.ID, "ReportView_ReportToolbar_ExportGr_Export").click()
-                        time.sleep(4)
+                        time.sleep(5)
                         driver.close()
                         break
                 driver.switch_to.window(janela_principal)
-        except:
-            pass
+        except: pass
 
         return {"status": "Sucesso", "arquivos": os.listdir("temp_pdfs")}
 
@@ -180,19 +210,48 @@ def extrair_detalhes_site_amhp(numero_guia):
     finally:
         driver.quit()
 
-# === INTERFACE ===
-st.set_page_config(page_title="GABMA - Consulta AMHP", page_icon="🏥")
-st.title("🏥 Consulta e Download AMHP")
+# === 5. INTERFACE DO USUÁRIO (STREAMLIT) ===
+st.set_page_config(page_title="GABMA - Conciliação AMHP", page_icon="🏥", layout="wide")
+
+st.title("🏥 Sistema GABMA: Conciliação Automática AMHP")
+st.markdown("Este robô acessa o portal, baixa os PDFs da guia e gera uma planilha consolidada.")
 
 if "credentials" not in st.secrets:
-    st.error("Configure os Secrets.")
+    st.error("Configure as credenciais no menu Secrets do Streamlit.")
 else:
-    guia = st.text_input("Número do Atendimento:")
-    if st.button("🚀 Processar e Baixar PDFs"):
-        with st.spinner("Executando fluxo de impressão..."):
-            res = extrair_detalhes_site_amhp(guia)
-            if "erro" in res:
-                st.error(res["erro"])
-            else:
-                st.success("Processo concluído!")
-                st.write("Arquivos baixados:", res["arquivos"])
+    guia_id = st.text_input("Número do Atendimento:", placeholder="Ex: 61789641")
+    
+    if st.button("🚀 Iniciar Processamento Completo"):
+        if not guia_id:
+            st.warning("Insira o número da guia.")
+        else:
+            with st.spinner("O robô está trabalhando no portal AMHP... Isso pode levar cerca de 1 minuto."):
+                res_robo = extrair_detalhes_site_amhp(guia_id)
+                
+                if "erro" in res_robo:
+                    st.error(f"Erro na automação: {res_robo['erro']}")
+                    if os.path.exists("erro_amhptiss.png"):
+                        st.image("erro_amhptiss.png", caption="Captura do Erro")
+                else:
+                    st.success("Arquivos PDF baixados com sucesso!")
+                    
+                    with st.spinner("Extraindo dados dos PDFs e gerando planilha..."):
+                        df_final = processar_pdfs_baixados()
+                        
+                        if not df_final.empty:
+                            st.subheader("📋 Dados Consolidados")
+                            st.dataframe(df_final, use_container_width=True)
+                            
+                            # Preparar Excel para download
+                            output = io.BytesIO()
+                            with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                                df_final.to_excel(writer, index=False, sheet_name='GABMA_AMHP')
+                            
+                            st.download_button(
+                                label="📥 Baixar Planilha Excel",
+                                data=output.getvalue(),
+                                file_name=f"gabma_conciliacao_{guia_id}.xlsx",
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                            )
+                        else:
+                            st.error("Não foi possível extrair dados dos PDFs. Verifique se o conteúdo dos arquivos está legível.")
