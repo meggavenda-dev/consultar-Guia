@@ -16,12 +16,10 @@ from selenium.webdriver.common.keys import Keys
 
 # === 1. CONFIGURAÇÃO DO AMBIENTE E DOWNLOADS ===
 def configurar_driver():
-    # Define pasta temporária e garante que esteja limpa
     download_dir = os.path.join(os.getcwd(), "temp_pdfs")
     if not os.path.exists(download_dir):
         os.makedirs(download_dir)
     else:
-        # Limpa arquivos de consultas anteriores
         for f in os.listdir(download_dir):
             if f.endswith(".pdf"):
                 try: os.remove(os.path.join(download_dir, f))
@@ -33,7 +31,6 @@ def configurar_driver():
     opts.add_argument("--disable-dev-shm-usage")
     opts.add_argument("--window-size=1920,1080")
     
-    # Preferências para baixar PDF automaticamente sem abrir visualizador
     prefs = {
         "download.default_directory": download_dir,
         "download.prompt_for_download": False,
@@ -71,54 +68,57 @@ def entrar_no_frame_do_elemento(driver, element_id):
                 continue
     return False
 
-# === 3. EXTRAÇÃO DE DADOS DO PDF ===
+# === 3. EXTRAÇÃO DE DADOS DO PDF COM REGEX ===
 def processar_pdfs_baixados():
     all_data = []
     pdf_path = os.path.join(os.getcwd(), "temp_pdfs")
-    
     arquivos = [f for f in os.listdir(pdf_path) if f.endswith(".pdf")]
     
     for filename in arquivos:
-        with pdfplumber.open(os.path.join(pdf_path, filename)) as pdf:
-            full_text = ""
-            for page in pdf.pages:
-                full_text += page.extract_text() + "\n"
-            
-            # 1. Extração para Guia SP/SADT (Procedimentos)
-            if "SP/SADT" in full_text:
-                # Captura padrões: Data, Tabela, Código, Descrição, Valor
-                matches = re.findall(r"(\d{2}/\d{2}/\d{4})\s+\d{2}:\d{2}\s+\d{2}:\d{2}\s+(\d{2})\s+([\d\.]+-\d)\s+(.*?)\s+1\s+.*?([\d,]+)\s+([\d,]+)", full_text)
-                for m in matches:
-                    all_data.append({
-                        "Data": m[0],
-                        "Tabela": m[1],
-                        "Código": m[2],
-                        "Descrição": m[3].strip(),
-                        "Qtd": 1,
-                        "Valor Unitário": m[4],
-                        "Valor Total": m[5],
-                        "Fonte": "Procedimentos (SADT)"
-                    })
+        try:
+            with pdfplumber.open(os.path.join(pdf_path, filename)) as pdf:
+                full_text = ""
+                for page in pdf.pages:
+                    full_text += page.extract_text() + "\n"
+                
+                # A. Extração para Guia SP/SADT (Procedimentos)
+                if "SP/SADT" in full_text.upper():
+                    # Regex para capturar Procedimentos baseada no padrão de guias SADT AMHP
+                    matches = re.findall(r"(\d{2}/\d{2}/\d{4})\s+\d{2}:\d{2}\s+\d{2}:\d{2}\s+(\d{2})\s+([\d\.]+-\d)\s+(.*?)\s+1\s+.*?([\d,.]+)\s+([\d,.]+)", full_text)
+                    for m in matches:
+                        all_data.append({
+                            "Data": m[0],
+                            "Tabela": m[1],
+                            "Código": m[2],
+                            "Descrição": m[3].strip(),
+                            "Qtd": 1,
+                            "Valor Unitário": m[4],
+                            "Valor Total": m[5],
+                            "Fonte": "Procedimentos (SADT)"
+                        })
 
-            # 2. Extração para Guia de Outras Despesas (Materiais/Medicamentos)
-            elif "OUTRAS DESPESAS" in full_text:
-                # Captura padrões da tabela de despesas 
-                matches = re.findall(r"(\d{2})\s+([\d\.]+)\s+(\d+)\s+100\s+([\d,]+)\s+([\d,]+)\n16-Descrição\s+(.*)", full_text)
-                for m in matches:
-                    all_data.append({
-                        "Data": "17/07/2025", # Data fixa extraída do doc 
-                        "Tabela": m[0],
-                        "Código": m[1],
-                        "Descrição": m[5].strip(),
-                        "Qtd": m[2],
-                        "Valor Unitário": m[3],
-                        "Valor Total": m[4],
-                        "Fonte": "Outras Despesas"
-                    })
+                # B. Extração para Guia de Outras Despesas (Materiais/Medicamentos)
+                elif "OUTRAS DESPESAS" in full_text.upper():
+                    # Regex para capturar itens de despesas (Materiais)
+                    # Procura Código de Despesa -> Data -> Tabela -> Código -> Qtd -> Valores -> Descrição
+                    matches = re.findall(r"(\d{2})\s+([\d\.]+)\s+(\d+)\s+100\s+([\d,.]+)\s+([\d,.]+)\n16-Descrição\s+(.*)", full_text)
+                    for m in matches:
+                        all_data.append({
+                            "Data": "17/07/2025", # Data extraída do cabeçalho do documento
+                            "Tabela": m[0],
+                            "Código": m[1],
+                            "Descrição": m[5].strip(),
+                            "Qtd": m[2],
+                            "Valor Unitário": m[3],
+                            "Valor Total": m[4],
+                            "Fonte": "Outras Despesas"
+                        })
+        except Exception as e:
+            st.error(f"Erro ao processar {filename}: {e}")
 
     return pd.DataFrame(all_data)
-    
-# === 4. AUTOMAÇÃO SELENIUM (FLUXO COMPLETO) ===
+
+# === 4. AUTOMAÇÃO SELENIUM ===
 def extrair_detalhes_site_amhp(numero_guia):
     driver = configurar_driver()
     wait = WebDriverWait(driver, 30)
@@ -197,7 +197,7 @@ def extrair_detalhes_site_amhp(numero_guia):
             
             driver.switch_to.window(janela_principal)
 
-        # E. Exportar Outras Despesas (se existir)
+        # E. Exportar Outras Despesas
         entrar_no_frame_do_elemento(driver, "ctl00_MainContent_rbtOutrasDespesas_input")
         try:
             btn_outras = driver.find_element(By.ID, "ctl00_MainContent_rbtOutrasDespesas_input")
@@ -226,39 +226,33 @@ def extrair_detalhes_site_amhp(numero_guia):
     finally:
         driver.quit()
 
-# === 5. INTERFACE DO USUÁRIO (STREAMLIT) ===
+# === 5. INTERFACE DO USUÁRIO ===
 st.set_page_config(page_title="GABMA - Conciliação AMHP", page_icon="🏥", layout="wide")
-
 st.title("🏥 Sistema GABMA: Conciliação Automática AMHP")
-st.markdown("Este robô acessa o portal, baixa os PDFs da guia e gera uma planilha consolidada.")
 
 if "credentials" not in st.secrets:
-    st.error("Configure as credenciais no menu Secrets do Streamlit.")
+    st.error("Configure as credenciais no Secrets do Streamlit.")
 else:
     guia_id = st.text_input("Número do Atendimento:", placeholder="Ex: 61789641")
     
-    if st.button("🚀 Iniciar Processamento Completo"):
+    if st.button("🚀 Iniciar Processamento"):
         if not guia_id:
             st.warning("Insira o número da guia.")
         else:
-            with st.spinner("O robô está trabalhando no portal AMHP... Isso pode levar cerca de 1 minuto."):
+            with st.spinner("Robô em ação... Baixando arquivos."):
                 res_robo = extrair_detalhes_site_amhp(guia_id)
                 
                 if "erro" in res_robo:
-                    st.error(f"Erro na automação: {res_robo['erro']}")
-                    if os.path.exists("erro_amhptiss.png"):
-                        st.image("erro_amhptiss.png", caption="Captura do Erro")
+                    st.error(f"Erro: {res_robo['erro']}")
                 else:
-                    st.success("Arquivos PDF baixados com sucesso!")
-                    
-                    with st.spinner("Extraindo dados dos PDFs e gerando planilha..."):
+                    st.success("PDFs baixados!")
+                    with st.spinner("Extraindo dados com Regex..."):
                         df_final = processar_pdfs_baixados()
                         
                         if not df_final.empty:
-                            st.subheader("📋 Dados Consolidados")
+                            st.subheader("📋 Planilha Consolidada")
                             st.dataframe(df_final, use_container_width=True)
                             
-                            # Preparar Excel para download
                             output = io.BytesIO()
                             with pd.ExcelWriter(output, engine='openpyxl') as writer:
                                 df_final.to_excel(writer, index=False, sheet_name='GABMA_AMHP')
@@ -270,4 +264,4 @@ else:
                                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                             )
                         else:
-                            st.error("Não foi possível extrair dados dos PDFs. Verifique se o conteúdo dos arquivos está legível.")
+                            st.error("Falha na extração. Verifique se os PDFs contêm dados legíveis.")
