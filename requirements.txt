@@ -1,1 +1,10 @@
-
+streamlit
+pandas
+selenium
+xlrd==2.0.1
+openpyxl
+xlsxwriter
+pdfplumber
+PyPDF2
+lxml
+beautifulsoup4
