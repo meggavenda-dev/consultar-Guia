@@ -20,8 +20,8 @@ from pdf2image import convert_from_path
 # === CONFIGURAÇÃO DO AMBIENTE ===
 
 def configurar_driver():
-    # Usamos caminho absoluto para evitar problemas no Linux/Streamlit Cloud
-    download_dir = os.path.abspath(os.path.join(os.getcwd(), "temp_pdfs"))
+    download_dir = os.path.join(os.getcwd(), "temp_pdfs")
+    # Limpeza preventiva para teste limpo
     if os.path.exists(download_dir):
         shutil.rmtree(download_dir)
     os.makedirs(download_dir)
@@ -36,8 +36,7 @@ def configurar_driver():
         "download.default_directory": download_dir,
         "download.prompt_for_download": False,
         "download.directory_upgrade": True,
-        "plugins.always_open_pdf_externally": True,
-        "profile.default_content_settings.popups": 0 # Libera popups de download
+        "plugins.always_open_pdf_externally": True
     }
     opts.add_experimental_option("prefs", prefs)
     
@@ -48,9 +47,11 @@ def configurar_driver():
     try:
         driver = webdriver.Chrome(options=opts)
     except:
-        driver = webdriver.Chrome(service=Service("/usr/bin/chromedriver"), options=opts)
-    
+        service = Service("/usr/bin/chromedriver")
+        driver = webdriver.Chrome(service=service, options=opts)
     return driver, download_dir
+
+# === NAVEGAÇÃO ENTRE FRAMES (SUA LÓGICA ORIGINAL) ===
 
 def entrar_no_frame_do_elemento(driver, element_id):
     driver.switch_to.default_content()
@@ -65,10 +66,11 @@ def entrar_no_frame_do_elemento(driver, element_id):
             try:
                 driver.find_element(By.ID, element_id)
                 return True
-            except: continue
+            except:
+                continue
     return False
 
-# === MOTOR DE EXTRAÇÃO (DADOS GABMA) ===
+# === MOTOR DE EXTRAÇÃO (INTELIGÊNCIA GABMA) ===
 
 def extrair_texto_pdf(caminho_pdf):
     texto_full = ""
@@ -77,132 +79,190 @@ def extrair_texto_pdf(caminho_pdf):
             for page in pdf.pages:
                 t = page.extract_text()
                 if t: texto_full += t + "\n"
-    except: pass
+    except Exception as e:
+        st.error(f"Erro ao ler PDF nativo: {e}")
     
+    # Se o texto for nulo ou imagem (comum no AMHP), usa OCR
     if len(texto_full.strip()) < 50:
         try:
             paginas_img = convert_from_path(caminho_pdf, dpi=200)
             for img in paginas_img:
                 texto_full += image_to_string(img, lang='por') + "\n"
-        except: pass
+        except Exception as e:
+            st.error(f"Erro no OCR (verifique packages.txt): {e}")
+    
     return texto_full
 
 def processar_arquivos_baixados(diretorio, numero_guia):
     dados_lista = []
-    padrao = re.compile(r"(\d{2}/\d{2}/\d{4}).*?(\d[\d\.\-]{5,15})\s+(.*?)\s+(\d+)\s+([\d,.]+)\s+([\d,.]+)", re.DOTALL)
+    # Regex flexível para capturar dados de faturamento
+    padrao = re.compile(
+        r"(\d{2}/\d{2}/\d{4})"  # Data
+        r".*?"                  # Salto preguiçoso
+        r"(\d[\d\.\-]{5,15})"   # Código TUSS
+        r"\s+(.*?)\s+"          # Descrição
+        r"(\d+)\s+"             # Qtd
+        r"([\d,.]+)\s+"         # Unit
+        r"([\d,.]+)",           # Total
+        re.DOTALL
+    )
     
     for arquivo in os.listdir(diretorio):
         if arquivo.lower().endswith(".pdf"):
-            texto = extrair_texto_pdf(os.path.join(diretorio, arquivo))
-            texto_limpo = re.sub(r"[ \t]+", " ", texto)
+            caminho = os.path.join(diretorio, arquivo)
+            texto = extrair_texto_pdf(caminho)
+            texto_limpo = re.sub(r"[ \t]+", " ", texto) # Normaliza espaços
             matches = padrao.findall(texto_limpo)
+            
             for m in matches:
                 dados_lista.append({
-                    "Atendimento": numero_guia, "Data": m[0], "Código": m[1],
-                    "Descrição": m[2].replace("\n", " ").strip(), "Qtd": m[3],
-                    "Vlr Unit": m[4], "Vlr Total": m[5], "Arquivo": arquivo
+                    "Guia": numero_guia,
+                    "Data": m[0],
+                    "Código": m[1],
+                    "Descrição": m[2].replace("\n", " ").strip(),
+                    "Qtd": m[3],
+                    "Valor Unit": m[4],
+                    "Valor Total": m[5],
+                    "Arquivo Origem": arquivo
                 })
     return pd.DataFrame(dados_lista)
 
-# === FUNÇÃO DE BUSCA E DOWNLOAD (AMHP) ===
+# === FUNÇÃO PRINCIPAL DE BUSCA ===
 
 def extrair_detalhes_site_amhp(numero_guia):
     driver, download_dir = configurar_driver()
+    # Garantir caminho absoluto para o Chrome
+    download_dir = os.path.abspath(download_dir) 
     wait = WebDriverWait(driver, 30)
     valor_solicitado = re.sub(r"\D+", "", str(numero_guia).strip())
+    janela_principal = driver.current_window_handle
     
     try:
-        # 1. Login
+        # 1. Login (Mantido)
         driver.get("https://portal.amhp.com.br/")
         wait.until(EC.presence_of_element_located((By.ID, "input-9"))).send_keys(st.secrets["credentials"]["usuario"])
         driver.find_element(By.ID, "input-12").send_keys(st.secrets["credentials"]["senha"] + Keys.ENTER)
 
-        # 2. Entrar no AMHPTISS
-        time.sleep(6)
+        # 2. Transição para AMHPTISS
+        time.sleep(7)
         btn_tiss = wait.until(EC.element_to_be_clickable((By.XPATH, "//button[contains(., 'AMHPTISS')]")))
         driver.execute_script("arguments[0].click();", btn_tiss)
         
-        # Mudar para a nova aba do sistema
+        # Esperar nova janela abrir e focar nela
         wait.until(lambda d: len(d.window_handles) > 1)
-        driver.switch_to.window(driver.window_handles[-1])
+        for handle in driver.window_handles:
+            if handle != janela_principal:
+                driver.switch_to.window(handle)
+                break
+        
         janela_sistema = driver.current_window_handle
 
-        # 3. Ir para Busca
+        # 3. Busca (Navegação Direta)
         driver.get("https://amhptiss.amhp.com.br/AtendimentosRealizados.aspx")
-        time.sleep(4)
-        
-        # Preencher Guia
-        input_id = "ctl00_MainContent_rtbNumeroAtendimento"
-        if entrar_no_frame_do_elemento(driver, input_id):
-            el = driver.find_element(By.ID, input_id)
-            driver.execute_script(f"arguments[0].value = '{valor_solicitado}';", el)
-            driver.find_element(By.ID, "ctl00_MainContent_btnBuscar_input").click()
+        time.sleep(5)
 
+        # Preenchimento Robusto
+        input_atendimento = wait.until(EC.presence_of_element_located((By.ID, "ctl00_MainContent_rtbNumeroAtendimento")))
+        driver.execute_script(f"arguments[0].value = '{valor_solicitado}';", input_atendimento)
+        
+        btn_buscar = driver.find_element(By.ID, "ctl00_MainContent_btnBuscar_input")
+        driver.execute_script("arguments[0].click();", btn_buscar)
+        
         # 4. Abrir Relatório
-        time.sleep(4)
-        wait.until(EC.element_to_be_clickable((By.XPATH, f"//a[contains(text(), '{valor_solicitado}')]"))).click()
+        time.sleep(5)
+        link_guia = wait.until(EC.element_to_be_clickable((By.XPATH, f"//a[contains(text(), '{valor_solicitado}')]")))
+        driver.execute_script("arguments[0].click();", link_guia)
         
-        # 5. Fluxo de Impressão (Seus Botões)
-        time.sleep(3)
-        btn_imprimir_id = "ctl00_MainContent_btnImprimir_input"
-        if entrar_no_frame_do_elemento(driver, btn_imprimir_id):
-            driver.find_element(By.ID, btn_imprimir_id).click()
-            
-            # Espera abrir a aba do PDF/Relatório
-            wait.until(lambda d: len(d.window_handles) > 2)
-            driver.switch_to.window(driver.window_handles[-1])
-            
-            # Selecionar PDF no Dropdown que você passou
-            dropdown = wait.until(EC.presence_of_element_located((By.ID, "ReportView_ReportToolbar_ExportGr_FormatList_DropDownList")))
-            Select(dropdown).select_by_value("PDF")
-            
-            # Clicar no link Exportar
-            time.sleep(2)
-            btn_export = driver.find_element(By.ID, "ReportView_ReportToolbar_ExportGr_Export")
-            driver.execute_script("arguments[0].click();", btn_export)
-            
-            # Aguardar o download
-            time.sleep(8)
-            driver.close() # Fecha aba do relatório
+        # 5. O PULO DO GATO: Download em Loop
+        # Vamos tentar os dois botões (Imprimir e Outras Despesas)
+        botoes = ["ctl00_MainContent_btnImprimir_input", "ctl00_MainContent_rbtOutrasDespesas_input"]
+        
+        for id_btn in botoes:
             driver.switch_to.window(janela_sistema)
+            if entrar_no_frame_do_elemento(driver, id_btn):
+                try:
+                    btn_export = driver.find_element(By.ID, id_btn)
+                    if btn_export.is_enabled():
+                        driver.execute_script("arguments[0].click();", btn_export)
+                        
+                        # Espera abrir a janela do relatório (terceira janela)
+                        wait.until(lambda d: len(d.window_handles) > 2)
+                        
+                        # Muda para a janela do relatório
+                        for handle in driver.window_handles:
+                            if handle not in [janela_principal, janela_sistema]:
+                                driver.switch_to.window(handle)
+                                break
+                        
+                        # Seleciona PDF e clica em Exportar
+                        drop = wait.until(EC.presence_of_element_located((By.ID, "ReportView_ReportToolbar_ExportGr_FormatList_DropDownList")))
+                        Select(drop).select_by_value("PDF")
+                        time.sleep(2)
+                        btn_final = driver.find_element(By.ID, "ReportView_ReportToolbar_ExportGr_Export")
+                        driver.execute_script("arguments[0].click();", btn_final)
+                        
+                        # AGUARDA O ARQUIVO APARECER NO DISCO
+                        time.sleep(8) 
+                        driver.close() # Fecha aba do relatório
+                except Exception as e:
+                    st.write(f"Aviso: Falha ao tentar clicar em {id_btn}: {e}")
+                    continue
 
-        # 6. Extração Final
+        driver.switch_to.window(janela_sistema)
+        
+        # 6. Extração
         df_final = processar_arquivos_baixados(download_dir, valor_solicitado)
         return {"status": "Sucesso", "dados": df_final, "diretorio": download_dir}
 
     except Exception as e:
-        driver.save_screenshot("erro_final.png")
-        return {"erro": str(e), "dados": pd.DataFrame()} # Garante que a chave 'dados' exista mesmo no erro
+        driver.save_screenshot("erro_download.png")
+        return {"erro": str(e)}
     finally:
         driver.quit()
 
-# === INTERFACE ===
+# === INTERFACE STREAMLIT ===
 
-st.set_page_config(page_title="GABMA - AMHP", layout="wide")
-st.title("🏥 Extrator de Faturamento AMHP")
+st.set_page_config(page_title="GABMA - Consulta AMHP", page_icon="🏥", layout="wide")
+st.title("🏥 Inteligência de Faturamento AMHP")
 
 if "credentials" not in st.secrets:
-    st.error("Configure os Secrets.")
+    st.error("Configure as credenciais em Secrets.")
 else:
-    guia = st.text_input("Número da Guia:")
-    if st.button("🚀 Iniciar"):
-        with st.spinner("Processando..."):
-            res = extrair_detalhes_site_amhp(guia)
-            
-            if "erro" in res and not res.get("status"):
-                st.error(f"Erro: {res['erro']}")
-                if os.path.exists("erro_final.png"): st.image("erro_final.png")
-            else:
-                st.success("Concluído!")
-                df = res["dados"]
-                if not df.empty:
-                    st.dataframe(df, use_container_width=True)
-                else:
-                    st.warning("Nenhum dado extraído. Verifique se o PDF baixou corretamente no expander abaixo.")
+    guia = st.text_input("Número do Atendimento:")
+    
+    if st.button("🚀 Processar e Analisar"):
+        if not guia:
+            st.warning("Informe a guia.")
+        else:
+            with st.spinner("Navegando no portal e baixando documentos..."):
+                res = extrair_detalhes_site_amhp(guia)
                 
-                with st.expander("📂 Arquivos no Servidor"):
-                    arquivos = os.listdir(res["diretorio"])
-                    for f in arquivos:
-                        st.write(f"📄 {f}")
-                        with open(os.path.join(res["diretorio"], f), "rb") as file:
-                            st.download_button(f"Download {f}", file, file_name=f)
+                if "erro" in res:
+                    st.error(f"Erro: {res['erro']}")
+                    if os.path.exists("erro_amhptiss.png"):
+                        st.image("erro_amhptiss.png", caption="Screenshot do Erro")
+                else:
+                    st.success("Automação concluída!")
+                    
+                    # --- TESTE DE DOWNLOAD (Para você conferir se baixou) ---
+                    with st.expander("📂 Conferência de Arquivos Baixados"):
+                        arquivos = os.listdir(res["diretorio"])
+                        if arquivos:
+                            for arq in arquivos:
+                                caminho = os.path.join(res["diretorio"], arq)
+                                tamanho = os.path.getsize(caminho) / 1024
+                                st.write(f"📄 {arq} ({tamanho:.1f} KB)")
+                                with open(caminho, "rb") as f:
+                                    st.download_button(f"📥 Baixar {arq}", f, file_name=arq)
+                        else:
+                            st.warning("Nenhum arquivo encontrado na pasta de download.")
+
+                    # --- EXIBIÇÃO DOS DADOS ---
+                    df = res["dados"]
+                    if not df.empty:
+                        st.subheader("📋 Dados Extraídos")
+                        st.dataframe(df, use_container_width=True)
+                        csv = df.to_csv(index=False).encode('utf-8-sig')
+                        st.download_button("📥 Baixar Planilha de Resultados", csv, "faturamento.csv", "text/csv")
+                    else:
+                        st.info("Os arquivos foram baixados, mas o motor de extração não encontrou o padrão de faturamento (verifique a Regex ou se é imagem).")
