@@ -131,106 +131,91 @@ def processar_arquivos_baixados(diretorio, numero_guia):
 
 def extrair_detalhes_site_amhp(numero_guia):
     driver, download_dir = configurar_driver()
+    # Garantir caminho absoluto para o Chrome
+    download_dir = os.path.abspath(download_dir) 
     wait = WebDriverWait(driver, 30)
     valor_solicitado = re.sub(r"\D+", "", str(numero_guia).strip())
-    janela_principal = None
+    janela_principal = driver.current_window_handle
     
     try:
-        # 1. Login
+        # 1. Login (Mantido)
         driver.get("https://portal.amhp.com.br/")
         wait.until(EC.presence_of_element_located((By.ID, "input-9"))).send_keys(st.secrets["credentials"]["usuario"])
         driver.find_element(By.ID, "input-12").send_keys(st.secrets["credentials"]["senha"] + Keys.ENTER)
 
-        # 2. Acesso ao Módulo TISS
-        time.sleep(6)
+        # 2. Transição para AMHPTISS
+        time.sleep(7)
         btn_tiss = wait.until(EC.element_to_be_clickable((By.XPATH, "//button[contains(., 'AMHPTISS')]")))
         driver.execute_script("arguments[0].click();", btn_tiss)
         
-        time.sleep(5)
-        if len(driver.window_handles) > 1:
-            driver.switch_to.window(driver.window_handles[-1])
-        janela_principal = driver.current_window_handle
+        # Esperar nova janela abrir e focar nela
+        wait.until(lambda d: len(d.window_handles) > 1)
+        for handle in driver.window_handles:
+            if handle != janela_principal:
+                driver.switch_to.window(handle)
+                break
+        
+        janela_sistema = driver.current_window_handle
 
-        # 3. Navegação Direta
+        # 3. Busca (Navegação Direta)
         driver.get("https://amhptiss.amhp.com.br/AtendimentosRealizados.aspx")
-        time.sleep(4)
+        time.sleep(5)
 
-        # 4. Preenchimento via RadInput
-        input_id = "ctl00_MainContent_rtbNumeroAtendimento"
-        state_id = "ctl00_MainContent_rtbNumeroAtendimento_ClientState"
-        entrar_no_frame_do_elemento(driver, input_id)
-
-        client_state = json.dumps({
-            "enabled": True, "emptyMessage": "", "validationText": valor_solicitado,
-            "valueAsString": valor_solicitado, "lastSetTextBoxValue": valor_solicitado
-        })
-
-        driver.execute_script("""
-            var el = document.getElementById(arguments[0]);
-            var state = document.getElementById(arguments[1]);
-            if(el) {
-                el.value = arguments[2];
-                if(state) state.value = arguments[3];
-                el.dispatchEvent(new Event('change', { bubbles: true }));
-                el.dispatchEvent(new Event('blur', { bubbles: true }));
-            }
-        """, input_id, state_id, valor_solicitado, client_state)
-
-        # 5. Buscar
+        # Preenchimento Robusto
+        input_atendimento = wait.until(EC.presence_of_element_located((By.ID, "ctl00_MainContent_rtbNumeroAtendimento")))
+        driver.execute_script(f"arguments[0].value = '{valor_solicitado}';", input_atendimento)
+        
         btn_buscar = driver.find_element(By.ID, "ctl00_MainContent_btnBuscar_input")
         driver.execute_script("arguments[0].click();", btn_buscar)
         
-        # 6. Abrir Guia
-        time.sleep(4)
-        wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, ".rgMasterTable")))
+        # 4. Abrir Relatório
+        time.sleep(5)
         link_guia = wait.until(EC.element_to_be_clickable((By.XPATH, f"//a[contains(text(), '{valor_solicitado}')]")))
         driver.execute_script("arguments[0].click();", link_guia)
-        time.sleep(3)
-
-        # 7. Exportar PDF Principal
-        btn_imprimir_id = "ctl00_MainContent_btnImprimir_input"
-        if entrar_no_frame_do_elemento(driver, btn_imprimir_id):
-            driver.find_element(By.ID, btn_imprimir_id).click()
-            time.sleep(6) 
-            for handle in driver.window_handles:
-                if handle != janela_principal:
-                    driver.switch_to.window(handle)
-                    break
-            try:
-                dropdown = wait.until(EC.presence_of_element_located((By.ID, "ReportView_ReportToolbar_ExportGr_FormatList_DropDownList")))
-                Select(dropdown).select_by_value("PDF")
-                driver.find_element(By.ID, "ReportView_ReportToolbar_ExportGr_Export").click()
-                time.sleep(6) # Tempo para download concluir
-                driver.close()
-            except: pass
-            driver.switch_to.window(janela_principal)
-
-        # 8. Exportar Outras Despesas
-        entrar_no_frame_do_elemento(driver, "ctl00_MainContent_rbtOutrasDespesas_input")
-        try:
-            btn_outras = driver.find_element(By.ID, "ctl00_MainContent_rbtOutrasDespesas_input")
-            if btn_outras.is_enabled():
-                btn_outras.click()
-                time.sleep(6)
-                for handle in driver.window_handles:
-                    if handle != janela_principal:
-                        driver.switch_to.window(handle)
-                        dropdown = wait.until(EC.presence_of_element_located((By.ID, "ReportView_ReportToolbar_ExportGr_FormatList_DropDownList")))
-                        Select(dropdown).select_by_value("PDF")
-                        driver.find_element(By.ID, "ReportView_ReportToolbar_ExportGr_Export").click()
-                        time.sleep(6)
-                        driver.close()
-                        break
-                driver.switch_to.window(janela_principal)
-        except: pass
-
-        # 9. Extração de Dados dos Arquivos
-        df_final = processar_arquivos_baixados(download_dir, valor_solicitado)
         
+        # 5. O PULO DO GATO: Download em Loop
+        # Vamos tentar os dois botões (Imprimir e Outras Despesas)
+        botoes = ["ctl00_MainContent_btnImprimir_input", "ctl00_MainContent_rbtOutrasDespesas_input"]
+        
+        for id_btn in botoes:
+            driver.switch_to.window(janela_sistema)
+            if entrar_no_frame_do_elemento(driver, id_btn):
+                try:
+                    btn_export = driver.find_element(By.ID, id_btn)
+                    if btn_export.is_enabled():
+                        driver.execute_script("arguments[0].click();", btn_export)
+                        
+                        # Espera abrir a janela do relatório (terceira janela)
+                        wait.until(lambda d: len(d.window_handles) > 2)
+                        
+                        # Muda para a janela do relatório
+                        for handle in driver.window_handles:
+                            if handle not in [janela_principal, janela_sistema]:
+                                driver.switch_to.window(handle)
+                                break
+                        
+                        # Seleciona PDF e clica em Exportar
+                        drop = wait.until(EC.presence_of_element_located((By.ID, "ReportView_ReportToolbar_ExportGr_FormatList_DropDownList")))
+                        Select(drop).select_by_value("PDF")
+                        time.sleep(2)
+                        btn_final = driver.find_element(By.ID, "ReportView_ReportToolbar_ExportGr_Export")
+                        driver.execute_script("arguments[0].click();", btn_final)
+                        
+                        # AGUARDA O ARQUIVO APARECER NO DISCO
+                        time.sleep(8) 
+                        driver.close() # Fecha aba do relatório
+                except Exception as e:
+                    st.write(f"Aviso: Falha ao tentar clicar em {id_btn}: {e}")
+                    continue
+
+        driver.switch_to.window(janela_sistema)
+        
+        # 6. Extração
+        df_final = processar_arquivos_baixados(download_dir, valor_solicitado)
         return {"status": "Sucesso", "dados": df_final, "diretorio": download_dir}
 
     except Exception as e:
-        driver.save_screenshot("erro_amhptiss.png")
+        driver.save_screenshot("erro_download.png")
         return {"erro": str(e)}
     finally:
         driver.quit()
