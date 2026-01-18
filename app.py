@@ -323,6 +323,7 @@ def extrair_detalhes_site_amhp(numero_guia):
         driver.execute_script("arguments[0].click();", link_guia)
         
        
+        
         # 5. O PULO DO GATO: Download robusto (somente melhorias; passos 1–4 intactos)
         # Libera download em headless via CDP (não impacta navegação)
         try:
@@ -401,50 +402,22 @@ def extrair_detalhes_site_amhp(numero_guia):
                         pass
                     continue
 
-# === INTERFACE STREAMLIT ===
+        driver.switch_to.window(janela_sistema)
+        
+        # 6. Extração
+        df_final = processar_arquivos_baixados(download_dir, valor_solicitado)
+        return {"status": "Sucesso", "dados": df_final, "diretorio": download_dir}
 
-st.set_page_config(page_title="GABMA - Consulta AMHP", page_icon="🏥", layout="wide")
-st.title("🏥 Inteligência de Faturamento AMHP")
-
-if "credentials" not in st.secrets:
-    st.error("Configure as credenciais em Secrets.")
-else:
-    guia = st.text_input("Número do Atendimento:")
-    
-    if st.button("🚀 Processar e Analisar"):
-        if not guia:
-            st.warning("Informe a guia.")
-        else:
-            with st.spinner("Navegando no portal e baixando documentos..."):
-                res = extrair_detalhes_site_amhp(guia)
-                
-               
-                if "erro" in res:
-                    st.error(f"Erro: {res['erro']}")
-                    if os.path.exists("erro_download.png"):
-                        st.image("erro_download.png", caption="Screenshot do Erro")
-                else:
-                    st.success("Automação concluída!")
-                    
-                    # --- TESTE DE DOWNLOAD (Para você conferir se baixou) ---
-                    with st.expander("📂 Conferência de Arquivos Baixados"):
-                        arquivos = os.listdir(res["diretorio"])
-                        if arquivos:
-                            for arq in arquivos:
-                                caminho = os.path.join(res["diretorio"], arq)
-                                tamanho = os.path.getsize(caminho) / 1024
-                                st.write(f"📄 {arq} ({tamanho:.1f} KB)")
-                                with open(caminho, "rb") as f:
-                                    st.download_button(f"📥 Baixar {arq}", f, file_name=arq)
-                        else:
-                            st.warning("Nenhum arquivo encontrado na pasta de download.")
-
-                    # --- EXIBIÇÃO DOS DADOS ---
-                    df = res["dados"]
-                    if not df.empty:
-                        st.subheader("📋 Dados Extraídos")
-                        st.dataframe(df, use_container_width=True)
-                        csv = df.to_csv(index=False).encode('utf-8-sig')
-                        st.download_button("📥 Baixar Planilha de Resultados", csv, "faturamento.csv", "text/csv")
-                    else:
-                        st.info("Os arquivos foram baixados, mas o motor de extração não encontrou o padrão de faturamento (verifique a Regex ou se é imagem).")
+    except Exception as e:
+        # Salva screenshot e retorna erro
+        try:
+            driver.save_screenshot("erro_download.png")
+        except Exception:
+            pass
+        return {"erro": str(e)}
+    finally:
+        # Garante fechamento do driver
+        try:
+            driver.quit()
+        except Exception:
+            pass
