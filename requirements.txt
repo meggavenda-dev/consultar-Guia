@@ -9,3 +9,5 @@ PyPDF2
 lxml
 beautifulsoup4
 numpy
+pytesseract
+pdf2image
