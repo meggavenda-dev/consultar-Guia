@@ -175,46 +175,54 @@ def extrair_detalhes_site_amhp(numero_guia):
             "ctl00_MainContent_rbtOutrasDespesas_input"
         ]
         
+        botoes_relatorio = [
+            "ctl00_MainContent_btnImprimir_input", 
+            "ctl00_MainContent_rbtOutrasDespesas_input"
+        ]
+        
         for id_btn in botoes_relatorio:
+            # Garante que volta para a janela do sistema antes de cada tentativa
             driver.switch_to.window(janela_sistema)
             
-            # Tenta encontrar o botão dentro dos frames
             if entrar_no_frame_do_elemento(driver, id_btn):
                 try:
-                    btn_export = driver.find_element(By.ID, id_btn)
+                    # Espera o botão estar realmente clicável
+                    btn_export = wait.until(EC.element_to_be_clickable((By.ID, id_btn)))
                     
-                    # Verifica se o botão existe e está visível/clicável
-                    if btn_export.is_displayed():
-                        driver.execute_script("arguments[0].click();", btn_export)
-                        
-                        # Espera a nova aba do relatório abrir
-                        wait.until(lambda d: len(d.window_handles) > 2)
-                        
-                        # Foca na aba do relatório (a última aberta)
-                        nova_aba = driver.window_handles[-1]
-                        driver.switch_to.window(nova_aba)
-                        
-                        # --- TELA DE EXPORTAÇÃO ---
-                        # Seleciona "PDF" no dropdown
-                        drop_elem = wait.until(EC.presence_of_element_located((By.ID, "ReportView_ReportToolbar_ExportGr_FormatList_DropDownList")))
-                        select = Select(drop_elem)
-                        select.select_by_value("PDF")
-                        
-                        time.sleep(1) # Pausa técnica para o script do site processar a seleção
-                        
-                        # Clica no link "Exportar"
-                        btn_final = driver.find_element(By.ID, "ReportView_ReportToolbar_ExportGr_Export")
-                        btn_final.click()
-                        
-                        # Aguarda o download (ajuste conforme a velocidade do site)
-                        time.sleep(6) 
-                        
-                        # Fecha a aba do relatório e volta para o sistema
-                        driver.close()
-                        driver.switch_to.window(janela_sistema)
-                        
+                    # Clique via JavaScript para evitar bloqueios de sobreposição
+                    driver.execute_script("arguments[0].click();", btn_export)
+                    
+                    # 5. Lidar com a nova aba do relatório
+                    wait.until(lambda d: len(d.window_handles) > 2)
+                    nova_aba = driver.window_handles[-1]
+                    driver.switch_to.window(nova_aba)
+                    
+                    # Espera o dropdown de formato carregar
+                    drop_id = "ReportView_ReportToolbar_ExportGr_FormatList_DropDownList"
+                    wait.until(EC.presence_of_element_located((By.ID, drop_id)))
+                    
+                    # Seleciona PDF
+                    select = Select(driver.find_element(By.ID, drop_id))
+                    select.select_by_value("PDF")
+                    
+                    # Pequena pausa para o ASP.NET processar o postback do select
+                    time.sleep(2)
+                    
+                    # Clica em Exportar
+                    btn_download = wait.until(EC.element_to_be_clickable((By.ID, "ReportView_ReportToolbar_ExportGr_Export")))
+                    driver.execute_script("arguments[0].click();", btn_download)
+                    
+                    # Tempo para o download completar
+                    time.sleep(8) 
+                    
+                    # FECHAMENTO SEGURO: Fecha a aba e volta para a principal
+                    driver.close() 
+                    driver.switch_to.window(janela_sistema)
+                    
                 except Exception as e:
-                    # Se um dos botões não existir (ex: não tem Outras Despesas), ele apenas pula
+                    st.write(f"Aviso: Elemento {id_btn} não disponível nesta guia.")
+                    # Se falhou, garante que volta para a janela do sistema para o próximo item do loop
+                    driver.switch_to.window(janela_sistema)
                     continue
 
         # 5. Processamento Final
