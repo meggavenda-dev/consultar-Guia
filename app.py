@@ -19,7 +19,7 @@ from pdf2image import convert_from_path
 
 # === CONFIGURAÇÃO DO AMBIENTE ===
 
-rom selenium.common.exceptions import TimeoutException, NoSuchElementException
+from selenium.common.exceptions import TimeoutException, NoSuchElementException
 
 def habilitar_download_headless(driver, download_dir):
     """Libera downloads em headless via CDP (se suportado)."""
