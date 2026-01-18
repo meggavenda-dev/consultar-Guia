@@ -1,5 +1,3 @@
-
-# -*- coding: utf-8 -*-
 import streamlit as st
 import pandas as pd
 import json
@@ -16,11 +14,9 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait, Select
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.keys import Keys
-from selenium.common.exceptions import TimeoutException, NoSuchElementException
 from pytesseract import image_to_string
 from pdf2image import convert_from_path
-
-# === HELPERS (APENAS PARA O PASSO 5) ===
+from selenium.common.exceptions import TimeoutException, NoSuchElementException
 
 def habilitar_download_headless(driver, download_dir):
     """Libera downloads em headless via CDP (se suportado)."""
@@ -35,7 +31,7 @@ def habilitar_download_headless(driver, download_dir):
 def esperar_pdf_baixar(download_dir, timeout=90):
     """
     Aguarda até existir pelo menos 1 PDF completo (sem .crdownload) no diretório,
-    com tamanho estabilizado (evita pegar arquivo incompleto).
+    com tamanho estabilizado, para evitar arquivo incompleto.
     """
     t0 = time.time()
     ultimo_total = -1
@@ -166,7 +162,9 @@ def exportar_pdf_reportviewer_generico(driver, wait, download_dir):
         raise NoSuchElementException("Botão Export do ReportViewer não encontrado.")
 
     driver.execute_script("arguments[0].click();", export_btn)
+    # Espera robusta pelo PDF; se quiser, mantenha também seu sleep como fallback em quem chama.
     esperar_pdf_baixar(download_dir, timeout=90)
+
 
 # === CONFIGURAÇÃO DO AMBIENTE ===
 
@@ -324,12 +322,15 @@ def extrair_detalhes_site_amhp(numero_guia):
         link_guia = wait.until(EC.element_to_be_clickable((By.XPATH, f"//a[contains(text(), '{valor_solicitado}')]")))
         driver.execute_script("arguments[0].click();", link_guia)
         
-        # 5. O PULO DO GATO: Download robusto (somente este bloco foi alterado)
+       
+        # 5. O PULO DO GATO: Download robusto (somente melhorias; passos 1–4 intactos)
+        # Libera download em headless via CDP (não impacta navegação)
         try:
             habilitar_download_headless(driver, download_dir)
         except Exception:
             pass
 
+        # Vamos tentar os dois botões (Imprimir e Outras Despesas) — sua ordem original
         botoes = ["ctl00_MainContent_btnImprimir_input", "ctl00_MainContent_rbtOutrasDespesas_input"]
         
         for id_btn in botoes:
@@ -338,21 +339,22 @@ def extrair_detalhes_site_amhp(numero_guia):
                 try:
                     btn_export = driver.find_element(By.ID, id_btn)
                     if btn_export.is_enabled():
+                        # Clica no botão (mesma lógica)
                         driver.execute_script("arguments[0].click();", btn_export)
                         
-                        # Caminho original: espera abrir popup (terceira janela)
+                        # === CAMINHO ORIGINAL: nova janela do relatório ===
                         tentou_popup = False
                         try:
                             wait.until(lambda d: len(d.window_handles) > 2)
                             tentou_popup = True
-                            
+
                             # Vai para a janela do relatório
                             for handle in driver.window_handles:
                                 if handle not in [janela_principal, janela_sistema]:
                                     driver.switch_to.window(handle)
                                     break
                             
-                            # Tenta primeiro pelos IDs fixos que você já usava
+                            # Tenta primeiro pelos IDs fixos que você usava
                             try:
                                 drop = wait.until(EC.presence_of_element_located((By.ID, "ReportView_ReportToolbar_ExportGr_FormatList_DropDownList")))
                                 Select(drop).select_by_value("PDF")
@@ -360,21 +362,23 @@ def extrair_detalhes_site_amhp(numero_guia):
                                 btn_final = driver.find_element(By.ID, "ReportView_ReportToolbar_ExportGr_Export")
                                 driver.execute_script("arguments[0].click();", btn_final)
                             except Exception:
-                                # Se IDs mudarem, usa fallback genérico
+                                # Se IDs mudarem, usa o fallback genérico
                                 exportar_pdf_reportviewer_generico(driver, wait, download_dir)
 
-                            # Espera robusta pelo PDF; se falhar, usa seu sleep como fallback
+                            # Espera o PDF finalizar o download (robusto). Se der timeout, aplica seu sleep como reserva.
                             try:
                                 esperar_pdf_baixar(download_dir, timeout=90)
                             except Exception:
                                 time.sleep(8)
 
-                            driver.close()  # Fecha aba do relatório
+                            # Fecha a janela do relatório e volta
+                            driver.close()
                             driver.switch_to.window(janela_sistema)
 
                         except Exception:
-                            # Fallback: se não abriu popup, tentar relatório embutido em iframe
+                            # === FALLBACK: relatório pode ter carregado em iframe na mesma aba ===
                             if not tentou_popup:
+                                # Se nem abriu popup, tenta localizar a toolbar dentro de um iframe
                                 try:
                                     ctx = mudar_para_contexto_relatorio(driver, wait, janela_principal, janela_sistema)
                                     if ctx["success"]:
@@ -397,18 +401,6 @@ def extrair_detalhes_site_amhp(numero_guia):
                         pass
                     continue
 
-        driver.switch_to.window(janela_sistema)
-        
-        # 6. Extração
-        df_final = processar_arquivos_baixados(download_dir, valor_solicitado)
-        return {"status": "Sucesso", "dados": df_final, "diretorio": download_dir}
-
-    except Exception as e:
-        driver.save_screenshot("erro_download.png")
-        return {"erro": str(e)}
-    finally:
-        driver.quit()
-
 # === INTERFACE STREAMLIT ===
 
 st.set_page_config(page_title="GABMA - Consulta AMHP", page_icon="🏥", layout="wide")
@@ -426,9 +418,9 @@ else:
             with st.spinner("Navegando no portal e baixando documentos..."):
                 res = extrair_detalhes_site_amhp(guia)
                 
+               
                 if "erro" in res:
                     st.error(f"Erro: {res['erro']}")
-                    # Correção: exibe o screenshot que realmente é salvo
                     if os.path.exists("erro_download.png"):
                         st.image("erro_download.png", caption="Screenshot do Erro")
                 else:
