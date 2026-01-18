@@ -5,6 +5,8 @@ import time
 import re
 import io
 import os
+import shutil
+import pdfplumber
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
@@ -12,13 +14,67 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait, Select
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.keys import Keys
+from pytesseract import image_to_string
+from pdf2image import convert_from_path
 
-# === CONFIGURAÇÃO DO AMBIENTE ===
+# === 1. NOVAS FUNÇÕES DE INTELIGÊNCIA (EXTRAÇÃO) ===
+
+def extrair_texto_pdf(caminho_pdf):
+    """Lê o PDF nativamente ou via OCR se necessário."""
+    texto_full = ""
+    try:
+        with pdfplumber.open(caminho_pdf) as pdf:
+            for page in pdf.pages:
+                t = page.extract_text()
+                if t: texto_full += t + "\n"
+    except Exception:
+        pass
+    
+    # Fallback para OCR se o texto for nulo ou imagem pura
+    if len(texto_full.strip()) < 50:
+        try:
+            paginas_img = convert_from_path(caminho_pdf)
+            for img in paginas_img:
+                texto_full += image_to_string(img, lang='por') + "\n"
+        except Exception as e:
+            st.error(f"Erro no OCR do arquivo {os.path.basename(caminho_pdf)}: {e}")
+    
+    return texto_full
+
+def processar_arquivos_baixados(diretorio, numero_guia):
+    """Varre a pasta, extrai os dados e monta o DataFrame."""
+    dados_lista = []
+    # Regex flexível para capturar os procedimentos
+    padrao = re.compile(r"(\d{2}/\d{2}/\d{4}).*?(\d{2,10}[-\d]*)\s+(.*?)\s+(\d+)\s+([\d,.]+)\s+([\d,.]+)", re.DOTALL)
+    
+    arquivos = [f for f in os.listdir(diretorio) if f.lower().endswith(".pdf")]
+    
+    for arquivo in arquivos:
+        texto = extrair_texto_pdf(os.path.join(diretorio, arquivo))
+        texto_limpo = re.sub(r"[ \t]+", " ", texto) # Normaliza espaços
+        matches = padrao.findall(texto_limpo)
+        
+        for m in matches:
+            dados_lista.append({
+                "Atendimento": numero_guia,
+                "Data": m[0],
+                "Código TUSS": m[1],
+                "Descrição": m[2].strip().replace("\n", " "),
+                "Qtd": m[3],
+                "Valor Unit": m[4],
+                "Valor Total": m[5],
+                "Origem": arquivo
+            })
+    return pd.DataFrame(dados_lista)
+
+# === 2. SUAS FUNÇÕES ORIGINAIS (MANTIDAS) ===
+
 def configurar_driver():
-    # AJUSTE 1: Configurar pasta de download e preferências
     download_dir = os.path.join(os.getcwd(), "temp_pdfs")
-    if not os.path.exists(download_dir):
-        os.makedirs(download_dir)
+    # Limpa a pasta antes de começar para não misturar dados
+    if os.path.exists(download_dir):
+        shutil.rmtree(download_dir)
+    os.makedirs(download_dir)
 
     opts = Options()
     opts.add_argument("--headless=new")
@@ -26,7 +82,6 @@ def configurar_driver():
     opts.add_argument("--disable-dev-shm-usage")
     opts.add_argument("--window-size=1920,1080")
     
-    # Preferências para baixar PDF automaticamente sem abrir visualizador
     prefs = {
         "download.default_directory": download_dir,
         "download.prompt_for_download": False,
@@ -44,9 +99,8 @@ def configurar_driver():
     except:
         service = Service("/usr/bin/chromedriver")
         driver = webdriver.Chrome(service=service, options=opts)
-    return driver
+    return driver, download_dir
 
-# === NAVEGAÇÃO ENTRE FRAMES ===
 def entrar_no_frame_do_elemento(driver, element_id):
     driver.switch_to.default_content()
     try:
@@ -64,9 +118,8 @@ def entrar_no_frame_do_elemento(driver, element_id):
                 continue
     return False
 
-# === FUNÇÃO DE BUSCA NO PORTAL AMHP ===
 def extrair_detalhes_site_amhp(numero_guia):
-    driver = configurar_driver()
+    driver, download_dir = configurar_driver()
     wait = WebDriverWait(driver, 30)
     valor_solicitado = re.sub(r"\D+", "", str(numero_guia).strip())
     janela_principal = None
@@ -91,7 +144,7 @@ def extrair_detalhes_site_amhp(numero_guia):
         driver.get("https://amhptiss.amhp.com.br/AtendimentosRealizados.aspx")
         time.sleep(4)
 
-        # 4. RadInput (Preenchimento)
+        # 4. RadInput (Preenchimento via ClientState)
         input_id = "ctl00_MainContent_rtbNumeroAtendimento"
         state_id = "ctl00_MainContent_rtbNumeroAtendimento_ClientState"
         entrar_no_frame_do_elemento(driver, input_id)
@@ -128,25 +181,21 @@ def extrair_detalhes_site_amhp(numero_guia):
         if entrar_no_frame_do_elemento(driver, btn_imprimir_id):
             btn_imprimir = driver.find_element(By.ID, btn_imprimir_id)
             driver.execute_script("arguments[0].click();", btn_imprimir)
-            time.sleep(6) # Esperar pop-up
+            time.sleep(6)
 
-            # Gerenciar Janelas (Ir para o Relatório)
             for handle in driver.window_handles:
                 if handle != janela_principal:
                     driver.switch_to.window(handle)
                     break
             
-            # Exportar PDF no Pop-up
             try:
                 dropdown = wait.until(EC.presence_of_element_located((By.ID, "ReportView_ReportToolbar_ExportGr_FormatList_DropDownList")))
                 Select(dropdown).select_by_value("PDF")
                 time.sleep(1)
                 driver.find_element(By.ID, "ReportView_ReportToolbar_ExportGr_Export").click()
-                time.sleep(4) # Tempo de download
-                driver.close() # Fecha janela do relatório
-            except:
-                pass
-            
+                time.sleep(5) 
+                driver.close()
+            except: pass
             driver.switch_to.window(janela_principal)
 
         # AJUSTE 3: Verificar Outras Despesas
@@ -157,7 +206,6 @@ def extrair_detalhes_site_amhp(numero_guia):
                 driver.execute_script("arguments[0].click();", btn_outras)
                 time.sleep(6)
                 
-                # Gerenciar Janelas novamente para o novo relatório
                 for handle in driver.window_handles:
                     if handle != janela_principal:
                         driver.switch_to.window(handle)
@@ -165,14 +213,16 @@ def extrair_detalhes_site_amhp(numero_guia):
                         Select(dropdown).select_by_value("PDF")
                         time.sleep(1)
                         driver.find_element(By.ID, "ReportView_ReportToolbar_ExportGr_Export").click()
-                        time.sleep(4)
+                        time.sleep(5)
                         driver.close()
                         break
                 driver.switch_to.window(janela_principal)
-        except:
-            pass
+        except: pass
 
-        return {"status": "Sucesso", "arquivos": os.listdir("temp_pdfs")}
+        # === NOVO: Processamento de Dados Pós-Download ===
+        df_final = processar_arquivos_baixados(download_dir, valor_solicitado)
+        
+        return {"status": "Sucesso", "dados": df_final, "arquivos": os.listdir(download_dir)}
 
     except Exception as e:
         driver.save_screenshot("erro_amhptiss.png")
@@ -180,19 +230,42 @@ def extrair_detalhes_site_amhp(numero_guia):
     finally:
         driver.quit()
 
-# === INTERFACE ===
-st.set_page_config(page_title="GABMA - Consulta AMHP", page_icon="🏥")
-st.title("🏥 Consulta e Download AMHP")
+# === 3. INTERFACE STREAMLIT ===
+
+st.set_page_config(page_title="GABMA - Consulta AMHP", page_icon="🏥", layout="wide")
+st.title("🏥 Consulta e Extração Automática AMHP")
 
 if "credentials" not in st.secrets:
-    st.error("Configure os Secrets.")
+    st.error("Configure as credenciais nos Secrets do Streamlit.")
 else:
     guia = st.text_input("Número do Atendimento:")
-    if st.button("🚀 Processar e Baixar PDFs"):
-        with st.spinner("Executando fluxo de impressão..."):
-            res = extrair_detalhes_site_amhp(guia)
-            if "erro" in res:
-                st.error(res["erro"])
-            else:
-                st.success("Processo concluído!")
-                st.write("Arquivos baixados:", res["arquivos"])
+    if st.button("🚀 Processar e Extrair Dados"):
+        if not guia:
+            st.warning("Por favor, digite o número da guia.")
+        else:
+            with st.spinner("Executando automação e extraindo dados (isso pode levar um minuto)..."):
+                res = extrair_detalhes_site_amhp(guia)
+                
+                if "erro" in res:
+                    st.error(f"Erro no processo: {res['erro']}")
+                else:
+                    st.success("Processo concluído!")
+                    
+                    df = res["dados"]
+                    if not df.empty:
+                        st.subheader("📋 Dados de Faturamento Extraídos")
+                        st.dataframe(df, use_container_width=True)
+                        
+                        # Botão de download
+                        csv = df.to_csv(index=False).encode('utf-8-sig')
+                        st.download_button(
+                            label="📥 Baixar Planilha CSV",
+                            data=csv,
+                            file_name=f"faturamento_guia_{guia}.csv",
+                            mime="text/csv",
+                        )
+                    else:
+                        st.warning("Nenhum dado de procedimento foi encontrado nos PDFs baixados.")
+                    
+                    with st.expander("Ver arquivos baixados"):
+                        st.write(res["arquivos"])
