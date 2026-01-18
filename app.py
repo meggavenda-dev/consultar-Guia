@@ -20,53 +20,73 @@ from pdf2image import convert_from_path
 # === 1. NOVAS FUNÇÕES DE INTELIGÊNCIA (EXTRAÇÃO) ===
 
 def extrair_texto_pdf(caminho_pdf):
-    """Lê o PDF nativamente ou via OCR se necessário."""
     texto_full = ""
     try:
         with pdfplumber.open(caminho_pdf) as pdf:
             for page in pdf.pages:
                 t = page.extract_text()
                 if t: texto_full += t + "\n"
-    except Exception:
-        pass
+    except Exception as e:
+        st.error(f"Erro ao abrir PDF {os.path.basename(caminho_pdf)}: {e}")
     
-    # Fallback para OCR se o texto for nulo ou imagem pura
+    # Debug: Mostra o que foi extraído nativamente no log do Streamlit
     if len(texto_full.strip()) < 50:
+        st.info(f"Ativando OCR para: {os.path.basename(caminho_pdf)}")
         try:
-            paginas_img = convert_from_path(caminho_pdf)
+            # Aumentamos o DPI para 200 para melhorar a nitidez da leitura
+            paginas_img = convert_from_path(caminho_pdf, dpi=200)
             for img in paginas_img:
                 texto_full += image_to_string(img, lang='por') + "\n"
         except Exception as e:
-            st.error(f"Erro no OCR do arquivo {os.path.basename(caminho_pdf)}: {e}")
+            st.error(f"Erro no OCR: {e}. Verifique se poppler e tesseract estão no packages.txt")
     
     return texto_full
 
 def processar_arquivos_baixados(diretorio, numero_guia):
-    """Varre a pasta, extrai os dados e monta o DataFrame."""
     dados_lista = []
-    # Regex flexível para capturar os procedimentos
-    padrao = re.compile(r"(\d{2}/\d{2}/\d{4}).*?(\d{2,10}[-\d]*)\s+(.*?)\s+(\d+)\s+([\d,.]+)\s+([\d,.]+)", re.DOTALL)
+    
+    # REGEX FLEXÍVEL: 
+    # Agora aceita datas com ou sem espaços, e códigos TUSS com qualquer pontuação
+    padrao = re.compile(
+        r"(\d{2}/\d{2}/\d{4})"  # Data
+        r".*?"                  # Qualquer coisa no meio
+        r"(\d[\d\.\-]{5,15})"   # Código (mínimo 5 dígitos/pontos)
+        r"\s+(.*?)\s+"          # Descrição
+        r"(\d+)\s+"             # Quantidade
+        r"([\d,.]+)\s+"         # Valor Unit
+        r"([\d,.]+)",           # Valor Total
+        re.DOTALL
+    )
     
     arquivos = [f for f in os.listdir(diretorio) if f.lower().endswith(".pdf")]
     
     for arquivo in arquivos:
         texto = extrair_texto_pdf(os.path.join(diretorio, arquivo))
-        texto_limpo = re.sub(r"[ \t]+", " ", texto) # Normaliza espaços
+        
+        # DEBUG: Se quiser ver o texto bruto para ajustar a regex, descomente a linha abaixo:
+        # st.text_area(f"Texto extraído de {arquivo}", texto, height=200)
+
+        # Normalização agressiva: remove múltiplos espaços e tabulações
+        texto_limpo = re.sub(r"[ \t]+", " ", texto)
         matches = padrao.findall(texto_limpo)
         
         for m in matches:
+            # Limpeza básica na descrição para remover quebras de linha residuais
+            desc = m[2].replace("\n", " ").strip()
+            
             dados_lista.append({
                 "Atendimento": numero_guia,
                 "Data": m[0],
                 "Código TUSS": m[1],
-                "Descrição": m[2].strip().replace("\n", " "),
+                "Descrição": desc,
                 "Qtd": m[3],
                 "Valor Unit": m[4],
                 "Valor Total": m[5],
                 "Origem": arquivo
             })
+            
     return pd.DataFrame(dados_lista)
-
+    
 # === 2. SUAS FUNÇÕES ORIGINAIS (MANTIDAS) ===
 
 def configurar_driver():
