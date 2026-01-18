@@ -20,48 +20,6 @@ from selenium.common.exceptions import TimeoutException, NoSuchElementException
 from pytesseract import image_to_string
 from pdf2image import convert_from_path
 
-# === CONFIGURAÇÃO DO AMBIENTE ===
-
-def configurar_driver():
-    download_dir = os.path.join(os.getcwd(), "temp_pdfs")
-    # Limpeza preventiva para teste limpo
-    if os.path.exists(download_dir):
-        shutil.rmtree(download_dir)
-    os.makedirs(download_dir)
-
-    opts = Options()
-    opts.add_argument("--headless=new")
-    opts.add_argument("--no-sandbox")
-    opts.add_argument("--disable-dev-shm-usage")
-    opts.add_argument("--window-size=1920,1080")
-    opts.add_argument("--disable-popup-blocking")  # ajuda quando o relatório abre em nova aba
-
-    prefs = {
-        "download.default_directory": os.path.abspath(download_dir),
-        "download.prompt_for_download": False,
-        "download.directory_upgrade": True,
-        "plugins.always_open_pdf_externally": True
-    }
-    opts.add_experimental_option("prefs", prefs)
-    
-    chrome_bin = os.environ.get("CHROME_BINARY", "/usr/bin/chromium")
-    if os.path.exists(chrome_bin):
-        opts.binary_location = chrome_bin
-
-    try:
-        driver = webdriver.Chrome(options=opts)
-    except:
-        service = Service("/usr/bin/chromedriver")
-        driver = webdriver.Chrome(service=service, options=opts)
-
-    # Libera downloads em headless via CDP (se suportado)
-    try:
-        habilitar_download_headless(driver, download_dir)
-    except Exception:
-        pass
-
-    return driver, download_dir
-
 # === HELPERS NOVOS (robustez de download/iframes/ReportViewer) ===
 
 def habilitar_download_headless(driver, download_dir):
@@ -212,7 +170,41 @@ def exportar_pdf_reportviewer(driver, wait, download_dir):
     driver.execute_script("arguments[0].click();", export_btn)
     esperar_pdf_baixar(download_dir, timeout=90)
 
-# === NAVEGAÇÃO ENTRE FRAMES (SUA LÓGICA ORIGINAL) ===
+# === CONFIGURAÇÃO DO AMBIENTE (SEU CÓDIGO ORIGINAL, INALTERADO) ===
+
+def configurar_driver():
+    download_dir = os.path.join(os.getcwd(), "temp_pdfs")
+    # Limpeza preventiva para teste limpo
+    if os.path.exists(download_dir):
+        shutil.rmtree(download_dir)
+    os.makedirs(download_dir)
+
+    opts = Options()
+    opts.add_argument("--headless=new")
+    opts.add_argument("--no-sandbox")
+    opts.add_argument("--disable-dev-shm-usage")
+    opts.add_argument("--window-size=1920,1080")
+    
+    prefs = {
+        "download.default_directory": download_dir,
+        "download.prompt_for_download": False,
+        "download.directory_upgrade": True,
+        "plugins.always_open_pdf_externally": True
+    }
+    opts.add_experimental_option("prefs", prefs)
+    
+    chrome_bin = os.environ.get("CHROME_BINARY", "/usr/bin/chromium")
+    if os.path.exists(chrome_bin):
+        opts.binary_location = chrome_bin
+
+    try:
+        driver = webdriver.Chrome(options=opts)
+    except:
+        service = Service("/usr/bin/chromedriver")
+        driver = webdriver.Chrome(service=service, options=opts)
+    return driver, download_dir
+
+# === NAVEGAÇÃO ENTRE FRAMES (SEU CÓDIGO ORIGINAL) ===
 
 def entrar_no_frame_do_elemento(driver, element_id):
     driver.switch_to.default_content()
@@ -231,7 +223,7 @@ def entrar_no_frame_do_elemento(driver, element_id):
                 continue
     return False
 
-# === MOTOR DE EXTRAÇÃO (INTELIGÊNCIA GABMA) ===
+# === MOTOR DE EXTRAÇÃO (SEU CÓDIGO ORIGINAL) ===
 
 def extrair_texto_pdf(caminho_pdf):
     texto_full = ""
@@ -288,7 +280,7 @@ def processar_arquivos_baixados(diretorio, numero_guia):
                 })
     return pd.DataFrame(dados_lista)
 
-# === FUNÇÃO PRINCIPAL DE BUSCA ===
+# === FUNÇÃO PRINCIPAL DE BUSCA (SEU FLUXO 1–4 INALTERADO) ===
 
 def extrair_detalhes_site_amhp(numero_guia):
     driver, download_dir = configurar_driver()
@@ -329,19 +321,20 @@ def extrair_detalhes_site_amhp(numero_guia):
         btn_buscar = driver.find_element(By.ID, "ctl00_MainContent_btnBuscar_input")
         driver.execute_script("arguments[0].click();", btn_buscar)
         
-        # 4. Abrir Relatório (mantido)
+        # 4. Abrir Relatório
         time.sleep(5)
         link_guia = wait.until(EC.element_to_be_clickable((By.XPATH, f"//a[contains(text(), '{valor_solicitado}')]")))
         driver.execute_script("arguments[0].click();", link_guia)
         time.sleep(1.5)  # pequeno buffer para DOM renderizar
 
-        # 5. O PULO DO GATO (versão robusta mantendo fluxo anterior intacto)
+        # 5. O PULO DO GATO: Download robusto (mantendo seu fluxo anterior intacto)
+        # Libera download em headless via CDP (opcional; não atrapalha se já estiver ok)
         try:
             habilitar_download_headless(driver, download_dir)
         except Exception:
             pass
 
-        # Vamos tentar os dois botões (Imprimir e Outras Despesas), mantendo sua ordem
+        # Vamos tentar os dois botões (Imprimir e Outras Despesas)
         botoes = ["ctl00_MainContent_btnImprimir_input", "ctl00_MainContent_rbtOutrasDespesas_input"]
         
         for id_btn in botoes:
@@ -354,13 +347,13 @@ def extrair_detalhes_site_amhp(numero_guia):
                         time.sleep(0.2)
                         driver.execute_script("arguments[0].click();", btn_export)
                         
-                        # Detecta ReportViewer como nova janela ou iframe
+                        # Detecta ReportViewer como nova janela OU iframe
                         ctx = mudar_para_contexto_relatorio(driver, wait, janela_principal, janela_sistema)
                         if not ctx["success"]:
                             st.write(f"Aviso: Cliquei em {id_btn}, mas não localizei relatório (nova janela/iframe).")
                             continue
                         
-                        # Exporta para PDF
+                        # Exporta para PDF (genérico)
                         exportar_pdf_reportviewer(driver, wait, download_dir)
                         
                         # Fecha contexto de relatório e volta
@@ -439,7 +432,4 @@ else:
                         csv = df.to_csv(index=False).encode('utf-8-sig')
                         st.download_button("📥 Baixar Planilha de Resultados", csv, "faturamento.csv", "text/csv")
                     else:
-                        st.info(
-                            "Os arquivos foram baixados, mas o motor de extração não encontrou o padrão de faturamento "
-                            "(verifique a Regex ou se é imagem)."
-                        )
+                        st.info("Os arquivos foram baixados, mas o motor de extração não encontrou o padrão de faturamento (verifique a Regex ou se é imagem).")
