@@ -20,7 +20,7 @@ from selenium.common.exceptions import TimeoutException, NoSuchElementException
 from pytesseract import image_to_string
 from pdf2image import convert_from_path
 
-# ===================== HELPERS NOVOS (para o PASSO 5) =====================
+# === HELPERS (APENAS PARA O PASSO 5) ===
 
 def habilitar_download_headless(driver, download_dir):
     """Libera downloads em headless via CDP (se suportado)."""
@@ -35,7 +35,7 @@ def habilitar_download_headless(driver, download_dir):
 def esperar_pdf_baixar(download_dir, timeout=90):
     """
     Aguarda até existir pelo menos 1 PDF completo (sem .crdownload) no diretório,
-    com tamanho estabilizado.
+    com tamanho estabilizado (evita pegar arquivo incompleto).
     """
     t0 = time.time()
     ultimo_total = -1
@@ -68,14 +68,12 @@ def switch_to_frame_contendo(driver, by, locator, max_depth=6):
     def _search_in_frame(depth=0):
         if depth > max_depth:
             return False
-        # Tenta no contexto atual
         try:
             driver.find_element(by, locator)
             return True
         except Exception:
             pass
 
-        # Percorre iframes deste nível
         frames = driver.find_elements(By.TAG_NAME, "iframe")
         for idx in range(len(frames)):
             switch_to_default_and_return(driver)
@@ -107,7 +105,7 @@ def mudar_para_contexto_relatorio(driver, wait, janela_principal, janela_sistema
     except Exception:
         pass
 
-    # 2) tenta localizar ReportViewer embutido via iframe
+    # 2) tenta localizar ReportViewer embutido via iframe (procurando a toolbar)
     try:
         driver.switch_to.window(janela_sistema)
         xp_toolbar = "//*[self::select or self::button or self::input][contains(@id,'Export') or contains(@title,'Export') or contains(@aria-label,'Export')]"
@@ -122,7 +120,7 @@ def mudar_para_contexto_relatorio(driver, wait, janela_principal, janela_sistema
 def exportar_pdf_reportviewer_generico(driver, wait, download_dir):
     """
     Fallback genérico para o ReportViewer:
-      - Seleciona 'PDF' (dropdown genérico)
+      - Seleciona 'PDF' no dropdown (ids/titles genéricos)
       - Clica no 'Export' (botão genérico)
       - Aguarda download
     """
@@ -145,7 +143,7 @@ def exportar_pdf_reportviewer_generico(driver, wait, download_dir):
     if dropdown is None:
         raise NoSuchElementException("Dropdown de formato do ReportViewer não encontrado.")
 
-    # tenta por texto visível e, se falhar, por value
+    # Seleciona PDF pelo texto visível ou pelo value
     try:
         Select(dropdown).select_by_visible_text("PDF")
     except Exception:
@@ -170,7 +168,7 @@ def exportar_pdf_reportviewer_generico(driver, wait, download_dir):
     driver.execute_script("arguments[0].click();", export_btn)
     esperar_pdf_baixar(download_dir, timeout=90)
 
-# ===================== CONFIGURAÇÃO DO AMBIENTE (SEU CÓDIGO) =====================
+# === CONFIGURAÇÃO DO AMBIENTE ===
 
 def configurar_driver():
     download_dir = os.path.join(os.getcwd(), "temp_pdfs")
@@ -204,7 +202,7 @@ def configurar_driver():
         driver = webdriver.Chrome(service=service, options=opts)
     return driver, download_dir
 
-# ===================== NAVEGAÇÃO ENTRE FRAMES (SEU CÓDIGO) =====================
+# === NAVEGAÇÃO ENTRE FRAMES (SUA LÓGICA ORIGINAL) ===
 
 def entrar_no_frame_do_elemento(driver, element_id):
     driver.switch_to.default_content()
@@ -223,7 +221,7 @@ def entrar_no_frame_do_elemento(driver, element_id):
                 continue
     return False
 
-# ===================== MOTOR DE EXTRAÇÃO (SEU CÓDIGO) =====================
+# === MOTOR DE EXTRAÇÃO (INTELIGÊNCIA GABMA) ===
 
 def extrair_texto_pdf(caminho_pdf):
     texto_full = ""
@@ -280,7 +278,7 @@ def processar_arquivos_baixados(diretorio, numero_guia):
                 })
     return pd.DataFrame(dados_lista)
 
-# ===================== FUNÇÃO PRINCIPAL DE BUSCA =====================
+# === FUNÇÃO PRINCIPAL DE BUSCA ===
 
 def extrair_detalhes_site_amhp(numero_guia):
     driver, download_dir = configurar_driver()
@@ -291,17 +289,17 @@ def extrair_detalhes_site_amhp(numero_guia):
     janela_principal = driver.current_window_handle
     
     try:
-        # 1. Login (Mantido - SEM ALTERAÇÕES)
+        # 1. Login (Mantido)
         driver.get("https://portal.amhp.com.br/")
         wait.until(EC.presence_of_element_located((By.ID, "input-9"))).send_keys(st.secrets["credentials"]["usuario"])
         driver.find_element(By.ID, "input-12").send_keys(st.secrets["credentials"]["senha"] + Keys.ENTER)
 
-        # 2. Transição para AMHPTISS (SEM ALTERAÇÕES)
+        # 2. Transição para AMHPTISS
         time.sleep(7)
         btn_tiss = wait.until(EC.element_to_be_clickable((By.XPATH, "//button[contains(., 'AMHPTISS')]")))
         driver.execute_script("arguments[0].click();", btn_tiss)
         
-        # Esperar nova janela abrir e focar nela (SEM ALTERAÇÕES)
+        # Esperar nova janela abrir e focar nela
         wait.until(lambda d: len(d.window_handles) > 1)
         for handle in driver.window_handles:
             if handle != janela_principal:
@@ -310,30 +308,28 @@ def extrair_detalhes_site_amhp(numero_guia):
         
         janela_sistema = driver.current_window_handle
 
-        # 3. Busca (Navegação Direta) (SEM ALTERAÇÕES)
+        # 3. Busca (Navegação Direta)
         driver.get("https://amhptiss.amhp.com.br/AtendimentosRealizados.aspx")
         time.sleep(5)
 
-        # Preenchimento Robusto (SEM ALTERAÇÕES)
+        # Preenchimento Robusto
         input_atendimento = wait.until(EC.presence_of_element_located((By.ID, "ctl00_MainContent_rtbNumeroAtendimento")))
         driver.execute_script(f"arguments[0].value = '{valor_solicitado}';", input_atendimento)
         
         btn_buscar = driver.find_element(By.ID, "ctl00_MainContent_btnBuscar_input")
         driver.execute_script("arguments[0].click();", btn_buscar)
         
-        # 4. Abrir Relatório (SEM ALTERAÇÕES)
+        # 4. Abrir Relatório
         time.sleep(5)
         link_guia = wait.until(EC.element_to_be_clickable((By.XPATH, f"//a[contains(text(), '{valor_solicitado}')]")))
         driver.execute_script("arguments[0].click();", link_guia)
         
-        # 5. O PULO DO GATO: Download robusto (apenas melhorias, sem mudar 1–4)
-        # Habilita download em headless via CDP (não impacta 1–4)
+        # 5. O PULO DO GATO: Download robusto (somente este bloco foi alterado)
         try:
             habilitar_download_headless(driver, download_dir)
         except Exception:
             pass
 
-        # Tenta os dois botões (sua ordem original)
         botoes = ["ctl00_MainContent_btnImprimir_input", "ctl00_MainContent_rbtOutrasDespesas_input"]
         
         for id_btn in botoes:
@@ -344,16 +340,19 @@ def extrair_detalhes_site_amhp(numero_guia):
                     if btn_export.is_enabled():
                         driver.execute_script("arguments[0].click();", btn_export)
                         
-                        # === CAMINHO ORIGINAL: nova janela do relatório ===
+                        # Caminho original: espera abrir popup (terceira janela)
+                        tentou_popup = False
                         try:
                             wait.until(lambda d: len(d.window_handles) > 2)
-                            # Muda para a janela do relatório
+                            tentou_popup = True
+                            
+                            # Vai para a janela do relatório
                             for handle in driver.window_handles:
                                 if handle not in [janela_principal, janela_sistema]:
                                     driver.switch_to.window(handle)
                                     break
                             
-                            # Tenta primeiro pelos IDs fixos originais
+                            # Tenta primeiro pelos IDs fixos que você já usava
                             try:
                                 drop = wait.until(EC.presence_of_element_located((By.ID, "ReportView_ReportToolbar_ExportGr_FormatList_DropDownList")))
                                 Select(drop).select_by_value("PDF")
@@ -361,10 +360,10 @@ def extrair_detalhes_site_amhp(numero_guia):
                                 btn_final = driver.find_element(By.ID, "ReportView_ReportToolbar_ExportGr_Export")
                                 driver.execute_script("arguments[0].click();", btn_final)
                             except Exception:
-                                # Fallback genérico (caso IDs mudem)
+                                # Se IDs mudarem, usa fallback genérico
                                 exportar_pdf_reportviewer_generico(driver, wait, download_dir)
 
-                            # Espera robusta pelo PDF (fallback para seu sleep)
+                            # Espera robusta pelo PDF; se falhar, usa seu sleep como fallback
                             try:
                                 esperar_pdf_baixar(download_dir, timeout=90)
                             except Exception:
@@ -374,20 +373,21 @@ def extrair_detalhes_site_amhp(numero_guia):
                             driver.switch_to.window(janela_sistema)
 
                         except Exception:
-                            # === FALLBACK: relatório embutido em iframe ===
-                            try:
-                                ctx = mudar_para_contexto_relatorio(driver, wait, janela_principal, janela_sistema)
-                                if ctx["success"]:
-                                    exportar_pdf_reportviewer_generico(driver, wait, download_dir)
-                                    if ctx["modo"] == "window":
-                                        driver.close()
-                                        driver.switch_to.window(janela_sistema)
+                            # Fallback: se não abriu popup, tentar relatório embutido em iframe
+                            if not tentou_popup:
+                                try:
+                                    ctx = mudar_para_contexto_relatorio(driver, wait, janela_principal, janela_sistema)
+                                    if ctx["success"]:
+                                        exportar_pdf_reportviewer_generico(driver, wait, download_dir)
+                                        if ctx["modo"] == "window":
+                                            driver.close()
+                                            driver.switch_to.window(janela_sistema)
+                                        else:
+                                            driver.switch_to.default_content()
                                     else:
-                                        driver.switch_to.default_content()
-                                else:
-                                    st.write(f"Aviso: Cliquei em {id_btn}, mas não localizei relatório (popup/iframe).")
-                            except Exception as e2:
-                                st.write(f"Aviso: falha no fallback do relatório: {e2}")
+                                        st.write(f"Aviso: Cliquei em {id_btn}, mas não localizei relatório (popup/iframe).")
+                                except Exception as e2:
+                                    st.write(f"Aviso: falha no fallback do relatório: {e2}")
 
                 except Exception as e:
                     st.write(f"Aviso: Falha ao tentar clicar em {id_btn}: {e}")
@@ -399,20 +399,17 @@ def extrair_detalhes_site_amhp(numero_guia):
 
         driver.switch_to.window(janela_sistema)
         
-        # 6. Extração (SEU CÓDIGO)
+        # 6. Extração
         df_final = processar_arquivos_baixados(download_dir, valor_solicitado)
         return {"status": "Sucesso", "dados": df_final, "diretorio": download_dir}
 
     except Exception as e:
-        try:
-            driver.save_screenshot("erro_download.png")
-        except Exception:
-            pass
+        driver.save_screenshot("erro_download.png")
         return {"erro": str(e)}
     finally:
         driver.quit()
 
-# ===================== INTERFACE STREAMLIT =====================
+# === INTERFACE STREAMLIT ===
 
 st.set_page_config(page_title="GABMA - Consulta AMHP", page_icon="🏥", layout="wide")
 st.title("🏥 Inteligência de Faturamento AMHP")
@@ -431,7 +428,7 @@ else:
                 
                 if "erro" in res:
                     st.error(f"Erro: {res['erro']}")
-                    # Corrigido: exibimos o screenshot que realmente salvamos:
+                    # Correção: exibe o screenshot que realmente é salvo
                     if os.path.exists("erro_download.png"):
                         st.image("erro_download.png", caption="Screenshot do Erro")
                 else:
