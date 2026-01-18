@@ -430,10 +430,11 @@ else:
             with st.spinner("Navegando no portal e baixando documentos..."):
                 res = extrair_detalhes_site_amhp(guia)
                 
+                
                 if "erro" in res:
                     st.error(f"Erro: {res['erro']}")
-                    if os.path.exists("erro_amhptiss.png"):
-                        st.image("erro_amhptiss.png", caption="Screenshot do Erro")
+                    if os.path.exists("erro_download.png"):
+                        st.image("erro_download.png", caption="Screenshot do Erro")
                 else:
                     st.success("Automação concluída!")
                     
